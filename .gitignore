@@ -1,0 +1,56 @@
+# === Node / Frontend ===
+node_modules/
+dist/
+.vite/
+*.local
+
+# === Python / Backend ===
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+venv/
+.venv/
+env/
+*.egg-info/
+.eggs/
+build/
+*.so
+
+# === AI Model Weights (large binary files) ===
+smart-attendance/backend/models/*.onnx
+smart-attendance/backend/models/*.bin
+smart-attendance/backend/models/*.pb
+smart-attendance/backend/models/*.pkl
+smart-attendance/backend/models/**/*.onnx
+smart-attendance/backend/models/**/*.bin
+
+# === Database & Data ===
+smart-attendance/backend/data/*.db
+smart-attendance/backend/data/*.sqlite
+smart-attendance/backend/data/*.sqlite3
+
+# === Snapshots (runtime generated images) ===
+smart-attendance/backend/snapshots/
+
+# === Environment Files ===
+.env
+.env.local
+.env.*.local
+
+# === IDE / OS ===
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# === Logs ===
+*.log
+logs/
+
+# === TypeScript build ===
+*.tsbuildinfo

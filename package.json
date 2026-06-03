@@ -1,0 +1,20 @@
+{
+  "name": "smart-attendance-portal",
+  "version": "2.0.0",
+  "private": true,
+  "scripts": {
+    "setup:admin": "cd frontend-admin && npm install",
+    "setup:live": "cd frontend-live && npm install",
+    "setup:backend": "cd smart-attendance/backend && python -m venv venv && venv\\Scripts\\pip install -r requirements.txt",
+    "setup": "npx -y concurrently \"npm run setup:admin\" \"npm run setup:live\" \"npm run setup:backend\"",
+    "dev:admin": "cd frontend-admin && npm run dev",
+    "dev:live": "cd frontend-live && npm run dev",
+    "dev:backend": "cd smart-attendance/backend && venv\\Scripts\\uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload",
+    "dev": "npx -y concurrently --kill-others \"npm run dev:backend\" \"npm run dev:admin\" \"npm run dev:live\""
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.1",
+    "typescript": "^6.0.3",
+    "vite": "^8.0.14"
+  }
+}

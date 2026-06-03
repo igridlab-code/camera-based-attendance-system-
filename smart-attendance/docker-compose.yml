@@ -1,0 +1,61 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: smart-attendance-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/data:/app/data
+      - ./backend/models:/app/models
+      - ./backend/snapshots:/app/snapshots
+    environment:
+      - SECRET_KEY=${SECRET_KEY:-change-me-in-production}
+      - DATABASE_URL=${DATABASE_URL:-sqlite:////app/data/attendance.db}
+      - ENABLE_GPU=${ENABLE_GPU:-false}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - CORS_ORIGINS=${CORS_ORIGINS:-*}
+      - FACE_RECOGNITION_THRESHOLD=${FACE_RECOGNITION_THRESHOLD:-0.45}
+      - LIVENESS_THRESHOLD=${LIVENESS_THRESHOLD:-0.6}
+      - ATTENDANCE_COOLDOWN_MINUTES=${ATTENDANCE_COOLDOWN_MINUTES:-5}
+      - ATTENDANCE_START_TIME=${ATTENDANCE_START_TIME:-09:00}
+      - ATTENDANCE_END_TIME=${ATTENDANCE_END_TIME:-18:00}
+      - LATE_THRESHOLD_MINUTES=${LATE_THRESHOLD_MINUTES:-15}
+      - MAX_CAMERAS=${MAX_CAMERAS:-16}
+      - FRAME_PROCESSING_SKIP=${FRAME_PROCESSING_SKIP:-2}
+    networks:
+      - smart-attendance-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  nginx:
+    image: nginx:alpine
+    container_name: smart-attendance-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "81:81"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ../frontend-admin/dist:/usr/share/nginx/html/admin:ro
+      - ../frontend-live/dist:/usr/share/nginx/html/live:ro
+    depends_on:
+      - backend
+    networks:
+      - smart-attendance-network
+
+networks:
+  smart-attendance-network:
+    driver: bridge
+
+volumes:
+  backend-data:
+  backend-models:
+  backend-snapshots:
