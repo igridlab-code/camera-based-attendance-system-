@@ -6,6 +6,8 @@ import base64
 import pickle
 import logging
 import os
+import numpy as np
+import cv2
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.orm import Session
@@ -405,6 +407,3 @@ def list_departments(db: Session = Depends(get_db), admin = Depends(get_current_
     departments = db.query(models.User.department).distinct().all()
     return [d[0] or "Unassigned" for d in departments if d[0]]
 
-
-import numpy as np
-import cv2

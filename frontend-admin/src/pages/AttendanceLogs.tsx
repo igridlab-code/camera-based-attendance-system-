@@ -15,6 +15,8 @@ interface AttendanceRecord {
   liveness_score: number;
   is_late: boolean;
   camera_name: string;
+  in_time?: string;
+  out_time?: string;
 }
 
 export default function AttendanceLogs() {
@@ -100,7 +102,7 @@ export default function AttendanceLogs() {
               <tr className="border-b border-white/5">
                 <th className="text-left text-xs text-white/40 font-medium uppercase tracking-wider px-4 py-3">User</th>
                 <th className="text-left text-xs text-white/40 font-medium uppercase tracking-wider px-4 py-3">Date</th>
-                <th className="text-left text-xs text-white/40 font-medium uppercase tracking-wider px-4 py-3">Time</th>
+                <th className="text-left text-xs text-white/40 font-medium uppercase tracking-wider px-4 py-3">In / Out Time</th>
                 <th className="text-left text-xs text-white/40 font-medium uppercase tracking-wider px-4 py-3">Status</th>
                 <th className="text-left text-xs text-white/40 font-medium uppercase tracking-wider px-4 py-3">Confidence</th>
                 <th className="text-left text-xs text-white/40 font-medium uppercase tracking-wider px-4 py-3">Liveness</th>
@@ -117,7 +119,12 @@ export default function AttendanceLogs() {
                     </div>
                   </td>
                   <td className="px-4 py-3 text-white/60 text-sm">{r.date}</td>
-                  <td className="px-4 py-3 text-white/60 text-sm">{r.time_str}</td>
+                  <td className="px-4 py-3">
+                    <div className="flex flex-col">
+                      <span className="text-white/80 text-sm">In: {r.in_time ? new Date(r.in_time).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : r.time_str || "-"}</span>
+                      <span className="text-white/40 text-xs mt-0.5">Out: {r.out_time ? new Date(r.out_time).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : "-"}</span>
+                    </div>
+                  </td>
                   <td className="px-4 py-3">
                     <span className={`text-xs px-2 py-0.5 rounded-full capitalize ${getStatusBadge(r.status)}`}>
                       {r.status}

@@ -21,11 +21,20 @@ interface Stats {
   online_cameras: number;
   unknown_detections_today: number;
   system_health: string;
+  window_info?: {
+    window_id: number;
+    interval_min: number;
+    next_processing: string;
+    countdown_seconds: number;
+  };
   recent_activity: Array<{
     id: number;
     user_name: string;
     employee_id: string;
     timestamp: string;
+    in_time: string | null;
+    out_time: string | null;
+    window_id: number;
     status: string;
     confidence: number;
   }>;
@@ -42,10 +51,26 @@ export default function Dashboard() {
   const [trends, setTrends] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
+  // Auto-countdown state
+  const [countdown, setCountdown] = useState<number>(0);
+
   useEffect(() => {
     loadData();
     const interval = setInterval(loadData, 30000);
     return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    if (stats?.window_info?.countdown_seconds) {
+      setCountdown(stats.window_info.countdown_seconds);
+    }
+  }, [stats]);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setCountdown(prev => Math.max(0, prev - 1));
+    }, 1000);
+    return () => clearInterval(timer);
   }, []);
 
   const loadData = async () => {
@@ -112,6 +137,12 @@ export default function Dashboard() {
     );
   }
 
+  const formatCountdown = (seconds: number) => {
+    const m = Math.floor(seconds / 60);
+    const s = seconds % 60;
+    return `${m}:${s.toString().padStart(2, '0')}`;
+  };
+
   return (
     <div className="space-y-6">
       <style>{`
@@ -133,19 +164,26 @@ export default function Dashboard() {
           <h1 className="text-2xl font-black text-white uppercase tracking-wider">Dashboard</h1>
           <p className="text-cyan-400/50 text-xs font-mono tracking-widest mt-0.5">REAL-TIME BIOMETRIC ATTENDANCE HUD</p>
         </div>
-        <div className="flex items-center gap-2">
-          <span className={
-            `px-3 py-1 rounded-full text-[10px] font-mono uppercase ${
-              stats?.system_health === "healthy"
-                ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/25"
-                : "bg-amber-500/10 text-amber-400 border border-amber-500/25"
-            }`
-          }>
-            <span className="flex items-center gap-1.5">
-              <span className={`w-1.5 h-1.5 rounded-full ${stats?.system_health === "healthy" ? "bg-emerald-400 animate-pulse" : "bg-amber-400"}`} />
-              {stats?.system_health === "healthy" ? "Core Node Ok" : "Service Degraded"}
+        <div className="flex flex-col items-end gap-1">
+          <div className="flex items-center gap-2">
+            <span className={
+              `px-3 py-1 rounded-full text-[10px] font-mono uppercase ${
+                stats?.system_health === "healthy"
+                  ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/25"
+                  : "bg-amber-500/10 text-amber-400 border border-amber-500/25"
+              }`
+            }>
+              <span className="flex items-center gap-1.5">
+                <span className={`w-1.5 h-1.5 rounded-full ${stats?.system_health === "healthy" ? "bg-emerald-400 animate-pulse" : "bg-amber-400"}`} />
+                {stats?.system_health === "healthy" ? "Core Node Ok" : "Service Degraded"}
+              </span>
             </span>
-          </span>
+          </div>
+          {stats?.window_info && (
+            <div className="text-[10px] font-mono text-cyan-400/80 bg-cyan-900/20 px-3 py-1 rounded-full border border-cyan-500/20">
+              WINDOW {stats.window_info.window_id} • NEXT IN {formatCountdown(countdown)}
+            </div>
+          )}
         </div>
       </div>
 
@@ -303,12 +341,18 @@ export default function Dashboard() {
                   )}
                 </div>
                 <div className="flex-1 min-w-0">
-                  <p className="text-white text-xs font-bold truncate">{activity.user_name}</p>
+                  <div className="flex items-center gap-2">
+                    <p className="text-white text-xs font-bold truncate">{activity.user_name}</p>
+                    <span className="text-[9px] font-mono text-cyan-400 bg-cyan-400/10 px-1.5 rounded">W{activity.window_id}</span>
+                  </div>
                   <p className="text-white/30 text-[9px] font-mono mt-0.5 tracking-wider">{activity.employee_id}</p>
                 </div>
                 <div className="text-right flex-shrink-0 font-mono">
-                  <p className="text-white/40 text-[9px]">{activity.timestamp?.slice(11, 19)}</p>
-                  <p className="text-cyan-400/60 text-[10px] font-bold">{(activity.confidence * 100).toFixed(0)}%</p>
+                  <p className="text-white/60 text-[9px]">
+                    IN {activity.in_time} 
+                    {activity.out_time && activity.out_time !== activity.in_time && ` / OUT ${activity.out_time}`}
+                  </p>
+                  <p className="text-cyan-400/60 text-[10px] font-bold">{(activity.confidence * 100).toFixed(0)}% CONF</p>
                 </div>
               </div>
             ))}

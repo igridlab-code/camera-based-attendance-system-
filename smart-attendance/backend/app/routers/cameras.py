@@ -10,7 +10,6 @@ from sqlalchemy import func
 from typing import Optional
 
 
-
 from app.database import get_db
 from app.auth import get_current_admin, require_admin
 from app.config import settings
@@ -37,6 +36,17 @@ def _db_camera_to_schema(camera: models.Camera) -> schemas.CameraOut:
     )
 
 
+# ─── IMPORTANT: Static path routes MUST come before /{camera_id} ────
+# Otherwise FastAPI will try to parse "status" as an integer and return 422.
+
+@router.get("/status/all")
+def get_all_camera_status(db: Session = Depends(get_db), admin = Depends(get_current_admin)):
+    """Get status of all camera streams."""
+    return camera_manager.get_all_status()
+
+
+# ─── Collection routes ───────────────────────────────────────────────
+
 @router.post("", response_model=schemas.CameraOut, dependencies=[Depends(require_admin)])
 def create_camera(camera: schemas.CameraCreate, db: Session = Depends(get_db)):
     """Add a new camera."""
@@ -57,7 +67,20 @@ def create_camera(camera: schemas.CameraCreate, db: Session = Depends(get_db)):
     db.add(db_camera)
     db.commit()
     db.refresh(db_camera)
-    
+
+    if db_camera.is_active:
+        try:
+            camera_manager.add_camera(
+                camera_id=db_camera.id,
+                name=db_camera.name,
+                source_url=db_camera.source_url,
+                resolution=db_camera.resolution,
+                fps=db_camera.fps,
+                flip_horizontal=db_camera.flip_horizontal,
+            )
+        except Exception as e:
+            logger.warning(f"Could not auto-start camera {db_camera.id}: {e}")
+
     logger.info(f"Camera added: {db_camera.name} ({db_camera.source_url})")
     return _db_camera_to_schema(db_camera)
 
@@ -72,10 +95,20 @@ def list_cameras(
     query = db.query(models.Camera)
     if is_active is not None:
         query = query.filter(models.Camera.is_active == is_active)
-    
-    cameras = query.all()
-    return [_db_camera_to_schema(c) for c in cameras]
 
+    cameras = query.all()
+    result = []
+    for c in cameras:
+        cam_schema = _db_camera_to_schema(c)
+        # Enrich with live stream status
+        live_status = camera_manager.get_camera_status(c.id)
+        if live_status.get("connected"):
+            cam_schema.health_status = "online"
+        result.append(cam_schema)
+    return result
+
+
+# ─── Per-camera routes ───────────────────────────────────────────────
 
 @router.get("/{camera_id}", response_model=schemas.CameraOut)
 def get_camera(camera_id: int, db: Session = Depends(get_db), admin = Depends(get_current_admin)):
@@ -92,17 +125,18 @@ def update_camera(camera_id: int, update: schemas.CameraUpdate, db: Session = De
     camera = db.query(models.Camera).filter(models.Camera.id == camera_id).first()
     if not camera:
         raise HTTPException(status_code=404, detail="Camera not found")
-    
+
     update_data = update.model_dump(exclude_unset=True)
     for field, value in update_data.items():
         if hasattr(camera, field):
             setattr(camera, field, value)
-    
+
     db.commit()
     db.refresh(camera)
-    
+
     # Restart stream if active
-    if camera.is_active and camera_manager.get_camera_status(camera_id).get("connected"):
+    live_status = camera_manager.get_camera_status(camera_id)
+    if camera.is_active and live_status.get("connected"):
         camera_manager.remove_camera(camera_id)
         camera_manager.add_camera(
             camera_id=camera.id,
@@ -112,7 +146,7 @@ def update_camera(camera_id: int, update: schemas.CameraUpdate, db: Session = De
             fps=camera.fps,
             flip_horizontal=camera.flip_horizontal,
         )
-    
+
     return _db_camera_to_schema(camera)
 
 
@@ -122,13 +156,20 @@ def delete_camera(camera_id: int, db: Session = Depends(get_db)):
     camera = db.query(models.Camera).filter(models.Camera.id == camera_id).first()
     if not camera:
         raise HTTPException(status_code=404, detail="Camera not found")
-    
+
     # Stop stream if active
-    camera_manager.remove_camera(camera_id)
-    
+    camera_manager.remove_camera(camera_id) 
+    db.query(models.UnknownDetection).filter(
+        models.UnknownDetection.camera_id == camera_id
+).delete()
+
+    db.query(models.AttendanceRecord).filter(
+    models.AttendanceRecord.camera_id == camera_id
+).delete()
+
     db.delete(camera)
     db.commit()
-    
+
     logger.info(f"Camera deleted: {camera.name}")
     return {"success": True, "message": "Camera deleted"}
 
@@ -139,15 +180,16 @@ def test_camera_connection(camera_id: int, db: Session = Depends(get_db), admin 
     camera = db.query(models.Camera).filter(models.Camera.id == camera_id).first()
     if not camera:
         raise HTTPException(status_code=404, detail="Camera not found")
-    
+
     result = camera_manager.test_camera(camera.source_url)
-    
+
     # Update health status
     camera.health_status = "online" if result["success"] else "offline"
     if result["success"]:
-        camera.last_online_at = func.now()
+        import datetime
+        camera.last_online_at = datetime.datetime.utcnow()
     db.commit()
-    
+
     return schemas.CameraTestResponse(**result)
 
 
@@ -157,11 +199,11 @@ def start_camera_stream(camera_id: int, db: Session = Depends(get_db)):
     camera = db.query(models.Camera).filter(models.Camera.id == camera_id).first()
     if not camera:
         raise HTTPException(status_code=404, detail="Camera not found")
-    
-    status = camera_manager.get_camera_status(camera_id)
-    if status.get("connected"):
+
+    live_status = camera_manager.get_camera_status(camera_id)
+    if live_status.get("connected"):
         return {"success": True, "message": "Camera already streaming"}
-    
+
     camera_manager.add_camera(
         camera_id=camera.id,
         name=camera.name,
@@ -170,7 +212,7 @@ def start_camera_stream(camera_id: int, db: Session = Depends(get_db)):
         fps=camera.fps,
         flip_horizontal=camera.flip_horizontal,
     )
-    
+
     return {"success": True, "message": "Camera stream started"}
 
 
@@ -187,21 +229,16 @@ def get_camera_frame(camera_id: int, db: Session = Depends(get_db), admin = Depe
     camera = db.query(models.Camera).filter(models.Camera.id == camera_id).first()
     if not camera:
         raise HTTPException(status_code=404, detail="Camera not found")
-    
+
     frame_b64 = camera_manager.get_frame_base64(camera_id)
     if frame_b64 is None:
-        raise HTTPException(status_code=503, detail="Camera not available")
-    
-    return {"frame": frame_b64, "timestamp": func.now()}
+        raise HTTPException(status_code=503, detail="Camera not available or not streaming")
+
+    import datetime
+    return {"frame": frame_b64, "timestamp": datetime.datetime.utcnow().isoformat()}
 
 
 @router.get("/{camera_id}/status")
 def get_camera_status(camera_id: int, db: Session = Depends(get_db), admin = Depends(get_current_admin)):
     """Get camera streaming status."""
     return camera_manager.get_camera_status(camera_id)
-
-
-@router.get("/status/all")
-def get_all_camera_status(db: Session = Depends(get_db), admin = Depends(get_current_admin)):
-    """Get status of all camera streams."""
-    return camera_manager.get_all_status()

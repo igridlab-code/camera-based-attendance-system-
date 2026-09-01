@@ -1,7 +1,12 @@
 import axios from "axios";
 
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000/api";
-const WS_BASE = import.meta.env.VITE_WS_URL || "ws://localhost:8000";
+// Relative paths work from same origin (FastAPI serving this at /live/)
+// Dev proxy in vite.config.ts rewrites /api → localhost:8000 when running standalone
+const API_BASE = import.meta.env.VITE_API_URL || "/api";
+
+// WebSocket base — derive from current page host so it works on any port
+const _proto = window.location.protocol === "https:" ? "wss" : "ws";
+const WS_BASE = import.meta.env.VITE_WS_URL || `${_proto}://${window.location.host}`;
 
 const client = axios.create({
   baseURL: API_BASE,
@@ -19,6 +24,7 @@ export { API_BASE, WS_BASE };
 
 export const cameraApi = {
   list: () => client.get("/cameras"),
+  get: (id: number) => client.get(`/cameras/${id}`),
 };
 
 export const analyticsApi = {
@@ -29,4 +35,3 @@ export const attendanceApi = {
   todayStats: () => client.get("/attendance/today/stats"),
   records: (params?: any) => client.get("/attendance/records", { params }),
 };
-

@@ -23,7 +23,9 @@ class AdminRole(str, Enum):
 
 class CameraType(str, Enum):
     WEBCAM = "webcam"
+    USB = "usb"
     IP = "ip"
+    RTSP = "rtsp"
     CCTV = "cctv"
     FILE = "file"
 
@@ -165,6 +167,9 @@ class AttendanceRecordOut(BaseModel):
     snapshot_path: Optional[str]
     is_late: bool
     late_minutes: int
+    in_time: Optional[datetime] = None
+    out_time: Optional[datetime] = None
+    attendance_window_id: Optional[int] = None
 
 class AttendanceFilter(BaseModel):
     user_id: Optional[int] = None

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import {
-  ShieldAlert, Activity, Clock, UserCheck, AlertTriangle,
+  ShieldAlert, Activity, Clock, UserCheck, UserX, AlertTriangle,
   Cpu, Camera as CameraIcon, Zap,
   BarChart3, Maximize, Minimize, Volume2, VolumeX, Database,
   Radio, CheckCircle2, Server
@@ -412,9 +412,9 @@ function DiagnosticChart({ themeColor }: { themeColor: string }) {
 
 function App() {
   const {
-    wsConnected, currentFrame, detections, attendanceEvents,
+    wsConnected, currentFrame, detections, attendanceEvents, windowInfo,
     systemStatus, selectedCamera, isSpoofDetected,
-    setWsConnected, setCurrentFrame, setDetections,
+    setWsConnected, setCurrentFrame, setDetections, setWindowInfo,
     addAttendanceEvent, setSystemStatus, setSelectedCamera, setIsSpoofDetected,
     setAttendanceEvents,
   } = useLiveStore();
@@ -429,6 +429,27 @@ function App() {
   const frameCountRef = useRef(0);
   const lastFpsTime = useRef(Date.now());
   const [currentTime, setCurrentTime] = useState(new Date());
+
+  const [countdown, setCountdown] = useState<number>(0);
+
+  useEffect(() => {
+    if (windowInfo?.countdown_seconds) {
+      setCountdown(windowInfo.countdown_seconds);
+    }
+  }, [windowInfo]);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setCountdown(prev => Math.max(0, prev - 1));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const formatCountdown = (seconds: number) => {
+    const m = Math.floor(seconds / 60);
+    const s = seconds % 60;
+    return `${m}:${s.toString().padStart(2, '0')}`;
+  };
 
   // Futuristic accent theme state
   const [hudTheme, setHudTheme] = useState<HudTheme>(() => {
@@ -579,6 +600,9 @@ function App() {
         if (data.type === "detection_frame") {
           setCurrentFrame(data.frame);
           setDetections(data.detections || []);
+          if (data.window_info) {
+            setWindowInfo(data.window_info);
+          }
 
           // Check for spoof
           const hasSpoof = (data.detections || []).some((d: any) => !d.is_real && d.identity !== "Unknown");
@@ -612,6 +636,9 @@ function App() {
             liveness_score: data.liveness_score,
             status: data.status,
             timestamp: data.timestamp,
+            in_time: data.in_time,
+            out_time: data.out_time,
+            window_id: data.window_id,
             camera_name: data.camera_name,
           });
 
@@ -641,7 +668,7 @@ function App() {
     ws.onerror = () => {
       ws.close();
     };
-  }, [selectedCamera, addAttendanceEvent, setWsConnected, setCurrentFrame, setDetections, setIsSpoofDetected, setSystemStatus, playBeep]);
+  }, [selectedCamera, addAttendanceEvent, setWsConnected, setCurrentFrame, setDetections, setIsSpoofDetected, setSystemStatus, setWindowInfo, playBeep]);
 
   useEffect(() => {
     connect();
@@ -767,6 +794,12 @@ function App() {
 
         {/* Telemetry info and theme selector / action toggles */}
         <div className="flex items-center gap-6">
+          {windowInfo && (
+            <div className="text-[10px] font-mono text-cyan-400 bg-cyan-900/40 px-3 py-1.5 rounded-full border border-cyan-500/20 shadow-[0_0_10px_rgba(6,182,212,0.1)]">
+              WINDOW {windowInfo.window_id} &bull; NEXT: {formatCountdown(countdown)}
+            </div>
+          )}
+
           {/* Accent Color Palette Customizer */}
           <div className="flex items-center gap-2 bg-slate-900/30 border border-white/5 rounded-lg px-2.5 py-1">
             <span className="text-[9px] font-mono text-white/30 uppercase mr-1">HUD Accent:</span>
@@ -1161,20 +1194,34 @@ function App() {
                       {/* Event category status marker */}
                       <div className={cn(
                         "w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 shadow-inner",
-                        event.status === "present" ? "bg-emerald-500/10" : "bg-amber-500/10"
+                        event.status === "present" ? "bg-emerald-500/10 border border-emerald-500/30" :
+                        event.status === "late" ? "bg-amber-500/10 border border-amber-500/30" :
+                        "bg-rose-500/10 border border-rose-500/30"
                       )}>
                         {event.status === "present" ? (
                           <UserCheck className="w-4.5 h-4.5 text-emerald-400" />
-                        ) : (
+                        ) : event.status === "late" ? (
                           <Clock className="w-4.5 h-4.5 text-amber-400" />
+                        ) : (
+                          <UserX className="w-4.5 h-4.5 text-rose-400" />
                         )}
                       </div>
 
                       {/* Attendee details */}
                       <div className="flex-1 min-w-0">
-                        <p className="text-white text-xs font-bold truncate leading-tight">
-                          {event.user_name}
-                        </p>
+                        <div className="flex items-center gap-2">
+                          <p className="text-white text-xs font-bold truncate leading-tight">
+                            {event.user_name}
+                          </p>
+                          <span className={cn(
+                            "text-[8px] font-mono px-1.5 py-0.5 rounded border uppercase font-bold tracking-wider",
+                            event.status === "present" ? "text-emerald-400 bg-emerald-400/10 border-emerald-400/30" :
+                            event.status === "late" ? "text-amber-400 bg-amber-400/10 border-amber-400/30" :
+                            "text-rose-400 bg-rose-400/10 border-rose-400/30"
+                          )}>
+                            {event.status}
+                          </span>
+                        </div>
                         <p className="text-white/30 text-[9px] font-mono mt-0.5 tracking-wider">
                           {event.employee_id}
                         </p>
@@ -1182,11 +1229,20 @@ function App() {
 
                       {/* Log details */}
                       <div className="text-right flex-shrink-0 font-mono">
-                        <p className={cn("text-[10px] font-bold", activeTheme.accent)}>
-                          {(event.confidence * 100).toFixed(0)}%
+                        <p className={cn("text-[10px] font-bold",
+                          event.status === "present" ? "text-emerald-400" :
+                          event.status === "late" ? "text-amber-400" : "text-rose-400"
+                        )}>
+                          {event.status === "absent" ? "ABSENT" : `${(event.confidence * 100).toFixed(0)}%`}
                         </p>
-                        <p className="text-white/20 text-[9px] mt-0.5">
-                          {new Date(event.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                        <p className="text-white/40 text-[9px] mt-0.5 whitespace-nowrap">
+                          {event.status === "absent" ? "Not Detected" : (
+                            <>
+                              {event.in_time && `IN ${event.in_time}`}
+                              {event.out_time && event.out_time !== event.in_time && ` / OUT ${event.out_time}`}
+                              {!event.in_time && (event.timestamp ? new Date(event.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '')}
+                            </>
+                          )}
                         </p>
                       </div>
                     </div>

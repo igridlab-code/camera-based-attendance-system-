@@ -64,8 +64,12 @@ export default function Security() {
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           {detections.map((d) => (
             <div key={d.id} className={`rounded-lg overflow-hidden border ${d.is_reviewed ? "border-white/5" : "border-amber-500/30"} bg-black/30`}>
-              <div className="aspect-video bg-black/50 flex items-center justify-center">
-                <ShieldAlert className="w-8 h-8 text-white/10" />
+              <div className="aspect-video bg-black/50 flex items-center justify-center overflow-hidden">
+                {d.snapshot_path ? (
+                  <img src={d.snapshot_path} alt="Unknown Face" className="w-full h-full object-cover" />
+                ) : (
+                  <ShieldAlert className="w-8 h-8 text-white/10" />
+                )}
               </div>
               <div className="p-2">
                 <div className="flex items-center justify-between">

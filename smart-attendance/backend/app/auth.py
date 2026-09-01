@@ -32,16 +32,16 @@ def get_password_hash(password: str) -> str:
 
 def create_access_token(subject: Union[str, int], role: str, expires_delta: Optional[timedelta] = None) -> str:
     if expires_delta:
-        expire = datetime.utcnow() + expires_delta
+        expire = datetime.now() + expires_delta
     else:
-        expire = datetime.utcnow() + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+        expire = datetime.now() + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     to_encode = {"exp": expire, "sub": str(subject), "role": role, "type": "access"}
     encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
     return encoded_jwt
 
 
 def create_refresh_token(subject: Union[str, int]) -> str:
-    expire = datetime.utcnow() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+    expire = datetime.now() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
     to_encode = {"exp": expire, "sub": str(subject), "type": "refresh"}
     encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
     return encoded_jwt
@@ -97,6 +97,21 @@ def get_current_admin(
     return admin
 
 
+def get_current_admin_optional(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    db: Session = Depends(get_db)
+) -> Optional[models.AdminUser]:
+    if credentials is None:
+        return None
+    token_data = decode_token(credentials.credentials)
+    if token_data is None or token_data.sub is None:
+        return None
+    admin = db.query(models.AdminUser).filter(models.AdminUser.id == token_data.sub).first()
+    if admin is None or not admin.is_active:
+        return None
+    return admin
+
+
 def require_role(allowed_roles: list):
     """Dependency factory to require specific admin roles."""
     def role_checker(admin: models.AdminUser = Depends(get_current_admin)):
@@ -122,14 +137,14 @@ def authenticate_admin(db: Session, username: str, password: str) -> Optional[mo
         # Track failed attempts
         admin.login_attempts = (admin.login_attempts or 0) + 1
         if admin.login_attempts >= 5:
-            admin.locked_until = datetime.utcnow() + timedelta(minutes=30)
+            admin.locked_until = datetime.now() + timedelta(minutes=30)
         db.commit()
         return None
     
     # Reset login attempts on success
     admin.login_attempts = 0
     admin.locked_until = None
-    admin.last_login = datetime.utcnow()
+    admin.last_login = datetime.now()
     db.commit()
     
     return admin

@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Camera, Check, ChevronLeft, ChevronRight, Loader2, AlertCircle, Cpu, Radio, ShieldCheck, VideoOff, RefreshCw } from "lucide-react";
-import { userApi } from "@/api/client";
+import { userApi, WS_BASE, cameraApi } from "@/api/client";
 import { useStore } from "@/store/useStore";
 
 type Step = "details" | "capture" | "review";
@@ -16,8 +16,9 @@ const SAMPLE_TYPES = [
 export default function RegisterUser() {
   const navigate = useNavigate();
   const { addNotification } = useStore();
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const streamRef = useRef<MediaStream | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const reconnectRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [currentFrame, setCurrentFrame] = useState<string | null>(null);
 
   const [step, setStep] = useState<Step>("details");
   const [saving, setSaving] = useState(false);
@@ -46,49 +47,61 @@ export default function RegisterUser() {
   // ── Camera helpers ──────────────────────────────────────────────────
 
   const stopCamera = useCallback(() => {
-    streamRef.current?.getTracks().forEach((t) => t.stop());
-    streamRef.current = null;
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+    if (reconnectRef.current) clearTimeout(reconnectRef.current);
+    setCurrentFrame(null);
     setCameraReady(false);
     setCameraError(null);
-    if (videoRef.current) {
-      videoRef.current.srcObject = null;
-    }
   }, []);
 
   const startCamera = useCallback(async () => {
-    // Stop any existing stream first
-    streamRef.current?.getTracks().forEach((t) => t.stop());
-    streamRef.current = null;
+    stopCamera();
     setCameraReady(false);
     setCameraError(null);
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: "user" },
-        audio: false,
-      });
-      streamRef.current = stream;
-
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        // Explicitly call play() — autoPlay alone is unreliable in some browsers
-        try {
-          await videoRef.current.play();
-        } catch (playErr) {
-          console.warn("video.play() warning:", playErr);
-        }
+      const res = await cameraApi.list();
+      const activeCams = res.data.filter((c: any) => c.is_active);
+      if (activeCams.length === 0) {
+        setCameraError("No active cameras found. Please configure a camera in Camera Management first.");
+        return;
       }
+      const camId = activeCams[0].id;
+
+      const ws = new WebSocket(`${WS_BASE}/ws/camera/${camId}`);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        setCameraReady(true);
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === "frame" && data.frame) {
+            setCurrentFrame(`data:image/jpeg;base64,${data.frame}`);
+          } else if (data.type === "status" && !data.connected) {
+            // Optional handling
+          }
+        } catch (e) {}
+      };
+
+      ws.onerror = () => {
+        ws.close();
+      };
+
+      ws.onclose = () => {
+        setCameraReady(false);
+      };
+
     } catch (e: any) {
-      const msg =
-        e.name === "NotAllowedError"
-          ? "Camera permission denied. Please allow camera access in your browser settings."
-          : e.name === "NotFoundError"
-          ? "No camera device found. Please connect a webcam."
-          : "Failed to access camera. Please check your device.";
-      setCameraError(msg);
-      addNotification({ type: "error", message: msg });
+      setCameraError("Failed to connect to backend camera stream.");
+      addNotification({ type: "error", message: "Failed to connect to backend camera stream." });
     }
-  }, [addNotification]);
+  }, [stopCamera, addNotification]);
 
   // ── Lifecycle: start/stop camera based on step ──────────────────────
   useEffect(() => {
@@ -106,9 +119,7 @@ export default function RegisterUser() {
   }, [step]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Video ready callback ────────────────────────────────────────────
-  const handleVideoCanPlay = useCallback(() => {
-    setCameraReady(true);
-  }, []);
+  // removed
 
   // ── Step navigation ─────────────────────────────────────────────────
   const proceedToCapture = () => {
@@ -142,29 +153,14 @@ export default function RegisterUser() {
 
   const captureImage = () => {
     setCaptureStatus("capturing");
-    const video = videoRef.current;
-    if (!video) return;
 
-    const w = video.videoWidth;
-    const h = video.videoHeight;
-
-    // Guard: if dimensions are 0, stream isn't ready
-    if (w === 0 || h === 0) {
+    if (!currentFrame) {
       setCaptureStatus("idle");
       addNotification({ type: "error", message: "Camera stream not ready. Please wait a moment and try again." });
       return;
     }
 
-    const canvas = document.createElement("canvas");
-    canvas.width = w;
-    canvas.height = h;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    ctx.drawImage(video, 0, 0);
-    const dataUrl = canvas.toDataURL("image/jpeg", 0.9);
-
-    setCapturedImages((prev) => ({ ...prev, [currentSample.key]: dataUrl }));
+    setCapturedImages((prev) => ({ ...prev, [currentSample.key]: currentFrame }));
     setCaptureStatus("done");
 
     setTimeout(() => {
@@ -337,17 +333,16 @@ export default function RegisterUser() {
                 </div>
               ) : null}
 
-              {/* Video element — always mounted so ref is valid */}
-              <video
-                ref={videoRef}
-                autoPlay
-                playsInline
-                muted
-                onCanPlay={handleVideoCanPlay}
-                onLoadedMetadata={handleVideoCanPlay}
-                className="w-full h-full object-cover"
-                style={{ display: cameraError ? "none" : "block" }}
-              />
+              {currentFrame ? (
+                <img
+                  src={currentFrame}
+                  alt="Camera Stream"
+                  className="w-full h-full object-cover"
+                  style={{ display: cameraError ? "none" : "block" }}
+                />
+              ) : (
+                <div className="w-full h-full bg-slate-900" style={{ display: cameraError ? "none" : "block" }} />
+              )}
 
               {/* Glowing countdown overlay */}
               {captureStatus === "countdown" && (

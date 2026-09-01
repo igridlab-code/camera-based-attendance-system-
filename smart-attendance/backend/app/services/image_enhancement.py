@@ -172,6 +172,10 @@ class ImageEnhancer:
         # Resize to target
         aligned = cv2.resize(face_crop, target_size, interpolation=cv2.INTER_AREA)
         
+        # Apply CLAHE explicitly to the cropped face region to normalize shadows/glare
+        # This dramatically improves recognition under extreme lighting.
+        aligned = self._apply_clahe(aligned)
+        
         return aligned
 
     def preprocess_for_recognition(

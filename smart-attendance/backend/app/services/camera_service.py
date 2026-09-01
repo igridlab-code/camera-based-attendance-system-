@@ -10,6 +10,7 @@ import threading
 import time
 import logging
 import base64
+import sys
 from typing import Dict, Optional, Callable, Any
 from dataclasses import dataclass, field
 from collections import deque
@@ -49,6 +50,37 @@ class CameraManager:
         self._streams: Dict[int, CameraStream] = {}
         self._lock = threading.RLock()
         self._next_id = 1
+        self._watchdog_thread = threading.Thread(target=self._watchdog_loop, daemon=True, name="CameraWatchdog")
+        self._watchdog_thread.start()
+
+    def _watchdog_loop(self):
+        while True:
+            time.sleep(5)
+            with self._lock:
+                now = time.time()
+                for cid, stream in list(self._streams.items()):
+                    if stream.is_running:
+                        # If more than 5 seconds since last frame and we have received at least one frame
+                        if stream.last_frame_time > 0 and (now - stream.last_frame_time) > 5.0:
+                            logger.error(f"Camera {cid} WATCHDOG TRIGGERED: frozen for {now - stream.last_frame_time:.1f}s. Restarting...")
+                            stream.is_connected = False
+                            stream.is_running = False
+                            
+                            # Force release in separate thread as it might block
+                            def _force_release(cap):
+                                try:
+                                    if cap: cap.release()
+                                except: pass
+                            
+                            threading.Thread(target=_force_release, args=(stream.cap,), daemon=True).start()
+                            
+                            # Re-add camera
+                            # We must not block the watchdog, so spawn a quick thread to re-add
+                            def _re_add(c_id, s_name, s_url, s_res):
+                                time.sleep(2)
+                                self.add_camera(camera_id=c_id, name=s_name, source_url=s_url, resolution=s_res)
+                                
+                            threading.Thread(target=_re_add, args=(cid, stream.name, stream.source_url, stream.resolution), daemon=True).start()
 
     def add_camera(
         self,
@@ -79,6 +111,19 @@ class CameraManager:
             # Stop existing if same ID
             if camera_id in self._streams:
                 self.remove_camera(camera_id)
+                
+            # Check if source_url is already in use by another active camera
+            for existing_id, existing_stream in self._streams.items():
+                if str(existing_stream.source_url) == str(source_url) and existing_stream.is_running:
+                    logger.warning(f"Camera source {source_url} is already in use by Camera {existing_id}. Cannot start Camera {camera_id}.")
+                    return CameraStream(
+                        camera_id=camera_id,
+                        name=name,
+                        source_url=source_url,
+                        resolution=resolution,
+                        is_running=False,
+                        is_connected=False
+                    )
             
             stream = CameraStream(
                 camera_id=camera_id,
@@ -121,21 +166,27 @@ class CameraManager:
         source = self._parse_source(stream.source_url)
         
         # Open capture
-        cap = cv2.VideoCapture(source)
+        if isinstance(source, int) and sys.platform.startswith('win'):
+            cap = cv2.VideoCapture(source, cv2.CAP_DSHOW)
+        else:
+            cap = cv2.VideoCapture(source)
         
         if isinstance(source, int):
             # USB webcam settings
             w, h = map(int, resolution.split('x'))
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
-            cap.set(cv2.CAP_PROP_FPS, fps)
+            try:
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
+                cap.set(cv2.CAP_PROP_FPS, fps)
+            except Exception as e:
+                logger.warning(f"Could not set camera properties: {e}")
         
         # Set buffer size to reduce latency
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         
         stream.cap = cap
         
-        frame_interval = 1.0 / max(fps, 1)
+        # Frame interval tracking for reference
         last_capture = time.time()
         
         while stream.is_running:
@@ -148,7 +199,20 @@ class CameraManager:
                         logger.error(f"Camera {camera_id} too many errors, reconnecting...")
                         cap.release()
                         time.sleep(1)
-                        cap = cv2.VideoCapture(source)
+                        if isinstance(source, int) and sys.platform.startswith('win'):
+                            cap = cv2.VideoCapture(source, cv2.CAP_DSHOW)
+                        else:
+                            cap = cv2.VideoCapture(source)
+                        if isinstance(source, int):
+                            w, h = map(int, resolution.split('x'))
+                            try:
+                                cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
+                                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
+                                cap.set(cv2.CAP_PROP_FPS, fps)
+                            except Exception as e:
+                                logger.warning(f"Could not set camera properties on reconnect: {e}")
+                        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                        
                         stream.cap = cap
                         stream.error_count = 0
                     time.sleep(0.1)
@@ -180,11 +244,9 @@ class CameraManager:
                     except Exception as e:
                         logger.error(f"Camera {camera_id} callback error: {e}")
                 
-                # Frame rate limiting
-                elapsed = time.time() - last_capture
-                if elapsed < frame_interval:
-                    time.sleep(frame_interval - elapsed)
-                last_capture = time.time()
+                # Removed explicit time.sleep() frame rate limiting because cap.read() 
+                # already blocks to the hardware refresh rate. Sleeping causes internal 
+                # buffer overflows, dropped frames, and eventual thread deadlock.
                 
             except Exception as e:
                 logger.error(f"Camera {camera_id} capture error: {e}")
@@ -272,7 +334,10 @@ class CameraManager:
     def test_camera(self, source_url: str, timeout: int = 5) -> Dict[str, Any]:
         """Test if a camera source is accessible."""
         source = self._parse_source(source_url)
-        cap = cv2.VideoCapture(source)
+        if isinstance(source, int) and sys.platform.startswith('win'):
+            cap = cv2.VideoCapture(source, cv2.CAP_DSHOW)
+        else:
+            cap = cv2.VideoCapture(source)
         
         result = {
             "success": False,

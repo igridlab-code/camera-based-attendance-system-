@@ -1,6 +1,10 @@
 import axios from "axios";
 
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000/api";
+// When served from FastAPI (same origin) → use relative /api path
+// When running standalone dev server (port 3000) → proxy rewrites to backend
+const API_BASE = import.meta.env.VITE_API_URL || "/api";
+const _proto = window.location.protocol === "https:" ? "wss" : "ws";
+const WS_BASE = import.meta.env.VITE_WS_URL || `${_proto}://${window.location.host}`;
 
 const client = axios.create({
   baseURL: API_BASE,
@@ -30,6 +34,7 @@ client.interceptors.response.use(
 );
 
 export default client;
+export { WS_BASE };
 
 export const authApi = {
   login: (username: string, password: string) =>
@@ -61,23 +66,30 @@ export const cameraApi = {
   test: (id: number) => client.post(`/cameras/${id}/test`),
   start: (id: number) => client.post(`/cameras/${id}/start`),
   stop: (id: number) => client.post(`/cameras/${id}/stop`),
+  status: (id: number) => client.get(`/cameras/${id}/status`),
+  allStatus: () => client.get("/cameras/status/all"),
+  frame: (id: number) => client.get(`/cameras/${id}/frame`),
 };
 
 export const attendanceApi = {
   todayStats: () => client.get("/attendance/today/stats"),
   records: (params?: any) => client.get("/attendance/records", { params }),
   trends: (days?: number) => client.get("/attendance/trends", { params: { days } }),
-  hourly: () => client.get("/attendance/hourly-distribution"),
+  hourly: (date?: string) => client.get("/attendance/hourly-distribution", { params: date ? { date } : {} }),
   departments: () => client.get("/attendance/department-stats"),
-  unknownDetections: () => client.get("/attendance/unknown-detections"),
-  exportCsv: () => client.get("/attendance/export/csv"),
+  unknownDetections: (params?: any) => client.get("/attendance/unknown-detections", { params }),
+  reviewDetection: (id: number, notes?: string) =>
+    client.post(`/attendance/unknown-detections/${id}/review`, null, { params: { notes: notes || "" } }),
+  exportCsv: (params?: any) => client.get("/attendance/export/csv", { params }),
+  exportJson: (params?: any) => client.get("/attendance/export/json", { params }),
 };
 
 export const analyticsApi = {
   dashboard: () => client.get("/analytics/dashboard"),
   dailySummary: (days?: number) => client.get("/analytics/daily-summary", { params: { days } }),
-  peakHours: () => client.get("/analytics/peak-hours"),
+  peakHours: (days?: number) => client.get("/analytics/peak-hours", { params: { days } }),
   systemHealth: () => client.get("/analytics/system-health"),
+  userStats: (userId: number) => client.get(`/analytics/user-stats/${userId}`),
 };
 
 export const trainingApi = {
@@ -85,4 +97,10 @@ export const trainingApi = {
   start: () => client.post("/training/start"),
   rebuildIndex: () => client.post("/training/rebuild-index"),
   indexInfo: () => client.get("/training/index-info"),
+};
+
+export const settingsApi = {
+  list: () => client.get("/settings"),
+  get: (key: string) => client.get(`/settings/${key}`),
+  update: (data: any) => client.put("/settings", data),
 };

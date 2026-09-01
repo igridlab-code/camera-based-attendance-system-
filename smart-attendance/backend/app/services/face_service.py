@@ -416,7 +416,7 @@ class FaceRecognitionService:
         for fid, track in self._face_tracker.items():
             tcx, tcy = track['center']
             dist = np.sqrt((cx - tcx)**2 + (cy - tcy)**2)
-            if dist < best_dist and dist < 100:  # 100 pixel threshold
+            if dist < best_dist and dist < 250:  # 250 pixel threshold for fast movement
                 best_dist = dist
                 best_id = fid
         

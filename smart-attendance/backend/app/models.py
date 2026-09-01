@@ -5,7 +5,8 @@ Comprehensive schema for users, embeddings, attendance, cameras, and audit logs.
 
 import datetime
 from sqlalchemy import (
-    Column, Integer, String, Float, Boolean, DateTime, Text, ForeignKey, Date, JSON, LargeBinary
+    Column, Integer, String, Float, Boolean, DateTime, Text, ForeignKey, Date, JSON, LargeBinary,
+    UniqueConstraint
 )
 from sqlalchemy.orm import relationship
 from app.database import Base
@@ -13,8 +14,8 @@ from app.database import Base
 
 class TimestampMixin:
     """Mixin to add created_at and updated_at timestamps."""
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.datetime.now)
+    updated_at = Column(DateTime, default=datetime.datetime.now, onupdate=datetime.datetime.now)
 
 
 class User(Base, TimestampMixin):
@@ -55,10 +56,16 @@ class FaceEmbedding(Base, TimestampMixin):
 class AttendanceRecord(Base, TimestampMixin):
     """Attendance records with recognition metadata."""
     __tablename__ = "attendance_records"
+    # A student can only have ONE attendance record per attendance window.
+    # This database-level constraint guarantees no duplicate PRESENT records
+    # can ever be created for the same student in the same session.
+    __table_args__ = (
+        UniqueConstraint("user_id", "attendance_window_id", name="uq_attendance_user_window"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
-    timestamp = Column(DateTime, default=datetime.datetime.utcnow)
+    timestamp = Column(DateTime, default=datetime.datetime.now)
     date = Column(Date, default=datetime.date.today)
     time_str = Column(String(10), nullable=True)
     camera_id = Column(Integer, ForeignKey("cameras.id"), nullable=True)
@@ -69,6 +76,12 @@ class AttendanceRecord(Base, TimestampMixin):
     verification_method = Column(String(100), default="automatic")
     is_late = Column(Boolean, default=False)
     late_minutes = Column(Integer, default=0)
+    in_time = Column(DateTime, nullable=True)
+    out_time = Column(DateTime, nullable=True)
+    attendance_window_id = Column(Integer, nullable=True, index=True)
+    # Unique Student ID / Register Number used for attendance matching.
+    # The row is created ONLY when this specific student is recognized.
+    employee_id = Column(String(100), nullable=True, index=True)
 
     user = relationship("User", back_populates="attendance_records")
     camera = relationship("Camera")
@@ -122,7 +135,7 @@ class AuditLog(Base):
     ip_address = Column(String(100), nullable=True)
     user_agent = Column(String(500), nullable=True)
     severity = Column(String(20), default="info")
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.datetime.now)
 
 
 class UnknownDetection(Base, TimestampMixin):
@@ -131,7 +144,7 @@ class UnknownDetection(Base, TimestampMixin):
 
     id = Column(Integer, primary_key=True, index=True)
     snapshot_path = Column(String(500), nullable=False)
-    timestamp = Column(DateTime, default=datetime.datetime.utcnow)
+    timestamp = Column(DateTime, default=datetime.datetime.now)
     camera_id = Column(Integer, ForeignKey("cameras.id"), nullable=True)
     confidence = Column(Float, default=0.0)
     liveness_score = Column(Float, default=0.0)
@@ -149,7 +162,7 @@ class SystemConfig(Base):
     config_key = Column(String(200), unique=True, nullable=False)
     config_value = Column(Text, nullable=True)
     description = Column(Text, nullable=True)
-    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.datetime.now, onupdate=datetime.datetime.now)
 
 
 class NotificationLog(Base):
@@ -163,5 +176,5 @@ class NotificationLog(Base):
     content = Column(Text, nullable=True)
     status = Column(String(50), default="pending")
     error_message = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.datetime.now)
     sent_at = Column(DateTime, nullable=True)

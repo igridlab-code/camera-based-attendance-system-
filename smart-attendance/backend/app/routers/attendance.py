@@ -10,7 +10,7 @@ from typing import Optional
 from datetime import date
 
 from app.database import get_db
-from app.auth import get_current_admin, require_admin
+from app.auth import get_current_admin, get_current_admin_optional, require_admin
 from app.services.attendance_service import (
     get_attendance_records, get_today_stats, get_attendance_trends,
     get_hourly_distribution, get_department_stats, export_attendance
@@ -22,7 +22,7 @@ router = APIRouter(prefix="/attendance", tags=["Attendance"])
 
 
 @router.get("/today/stats")
-def today_stats(db: Session = Depends(get_db), admin = Depends(get_current_admin)):
+def today_stats(db: Session = Depends(get_db), admin = Depends(get_current_admin_optional)):
     """Get today's attendance statistics."""
     return get_today_stats(db)
 
@@ -38,7 +38,7 @@ def list_attendance(
     page: int = 1,
     page_size: int = 50,
     db: Session = Depends(get_db),
-    admin = Depends(get_current_admin)
+    admin = Depends(get_current_admin_optional)
 ):
     """Get attendance records with filtering."""
     filters = schemas.AttendanceFilter(
@@ -55,7 +55,12 @@ def list_attendance(
     records, total = get_attendance_records(db, filters)
     
     results = []
+    seen_user_ids = set()
+    today = date.today()
+    
     for r in records:
+        if r.user_id and r.date == today:
+            seen_user_ids.add(r.user_id)
         results.append(schemas.AttendanceRecordOut(
             id=r.id,
             user_id=r.user_id,
@@ -72,7 +77,40 @@ def list_attendance(
             snapshot_path=r.snapshot_path,
             is_late=r.is_late,
             late_minutes=r.late_minutes,
+            in_time=r.in_time,
+            out_time=r.out_time,
+            attendance_window_id=r.attendance_window_id,
         ))
+    
+    # Include ABSENT entries for registered active users who have not checked in today
+    if page == 1 and not status and not user_id and not date_from and not date_to:
+        from datetime import datetime as dt
+        from app.models import User
+        active_users = db.query(User).filter(User.is_active == True).all()
+        now_dt = dt.now()
+        for u in active_users:
+            if u.id not in seen_user_ids:
+                results.append(schemas.AttendanceRecordOut(
+                    id=900000 + u.id,
+                    user_id=u.id,
+                    user_name=u.full_name,
+                    user_employee_id=u.employee_id,
+                    timestamp=now_dt,
+                    date=today,
+                    time_str=None,
+                    camera_id=None,
+                    camera_name=None,
+                    confidence=0.0,
+                    liveness_score=0.0,
+                    status="absent",
+                    snapshot_path=None,
+                    is_late=False,
+                    late_minutes=0,
+                    in_time=None,
+                    out_time=None,
+                    attendance_window_id=1,
+                ))
+                total += 1
     
     return {"items": results, "total": total, "page": page, "page_size": page_size}
 

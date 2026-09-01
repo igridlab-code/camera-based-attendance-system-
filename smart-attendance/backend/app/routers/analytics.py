@@ -62,6 +62,9 @@ def dashboard_stats(db: Session = Depends(get_db), admin = Depends(get_current_a
             "user_name": r.user.full_name if r.user else "Unknown",
             "employee_id": r.user.employee_id if r.user else None,
             "timestamp": r.timestamp.isoformat(),
+            "in_time": r.in_time.strftime("%H:%M:%S") if r.in_time else None,
+            "out_time": r.out_time.strftime("%H:%M:%S") if r.out_time else None,
+            "window_id": r.attendance_window_id,
             "status": r.status,
             "confidence": r.confidence,
         })
@@ -89,6 +92,8 @@ def dashboard_stats(db: Session = Depends(get_db), admin = Depends(get_current_a
             "rate": round(dept_present / dept_total * 100, 1) if dept_total > 0 else 0,
         })
     
+    from app.services.attendance_service import get_current_window_info
+    
     return {
         "total_users": total_users,
         "today_present": today_present,
@@ -104,6 +109,7 @@ def dashboard_stats(db: Session = Depends(get_db), admin = Depends(get_current_a
         "active_streams": camera_manager.active_count,
         "recognition_index_size": len(face_service._user_ids),
         "server_time": datetime.utcnow().isoformat(),
+        "window_info": get_current_window_info(db)
     }
 
 

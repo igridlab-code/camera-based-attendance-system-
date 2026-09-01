@@ -41,10 +41,12 @@ class Settings:
 
     # CORS
     CORS_ORIGINS: list = [
+        "http://localhost:8000",
         "http://localhost:3000",
         "http://localhost:3001",
         "http://localhost:5173",
         "http://localhost:5174",
+        "http://127.0.0.1:8000",
         "http://127.0.0.1:3000",
         "http://127.0.0.1:3001",
         "http://127.0.0.1:5173",
@@ -53,7 +55,7 @@ class Settings:
 
     # AI / Face Recognition
     FACE_DETECTION_THRESHOLD: float = float(os.getenv("FACE_DETECTION_THRESHOLD", "0.5"))
-    FACE_RECOGNITION_THRESHOLD: float = float(os.getenv("FACE_RECOGNITION_THRESHOLD", "0.45"))
+    FACE_RECOGNITION_THRESHOLD: float = float(os.getenv("FACE_RECOGNITION_THRESHOLD", "0.65"))
     LIVENESS_THRESHOLD: float = float(os.getenv("LIVENESS_THRESHOLD", "0.6"))
     FACE_EMBEDDING_DIM: int = 512
     MAX_FACE_SAMPLES_PER_USER: int = 10

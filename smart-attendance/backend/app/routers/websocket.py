@@ -24,6 +24,23 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/ws", tags=["WebSocket"])
 
+# Thread-safe wrappers for DB operations to avoid SQLite thread crash
+def thread_safe_mark_attendance(*args, **kwargs):
+    from app.database import SessionLocal
+    db = SessionLocal()
+    try:
+        return mark_attendance(db=db, *args, **kwargs)
+    finally:
+        db.close()
+
+def thread_safe_mark_unknown(*args, **kwargs):
+    from app.database import SessionLocal
+    db = SessionLocal()
+    try:
+        return mark_unknown_detection(db=db, *args, **kwargs)
+    finally:
+        db.close()
+
 # Connection managers for different channels
 class ConnectionManager:
     """Manages WebSocket connections for real-time broadcasting."""
@@ -91,14 +108,14 @@ async def websocket_attendance(websocket: WebSocket):
                 action = msg.get("action", "ping")
                 
                 if action == "ping":
-                    await manager.send_personal(websocket, {"type": "pong", "timestamp": datetime.utcnow().isoformat()})
+                    await manager.send_personal(websocket, {"type": "pong", "timestamp": datetime.now().isoformat()})
                 
                 elif action == "get_stats":
                     # Send current stats
                     await manager.send_personal(websocket, {
                         "type": "stats",
                         "active_cameras": camera_manager.active_count,
-                        "timestamp": datetime.utcnow().isoformat(),
+                        "timestamp": datetime.now().isoformat(),
                     })
                 
             except json.JSONDecodeError:
@@ -135,6 +152,7 @@ async def websocket_camera(websocket: WebSocket, camera_id: int):
     try:
         frame_count = 0
         while True:
+            loop_start = datetime.now()
             # Get latest frame
             frame = camera_manager.get_frame(camera_id)
             
@@ -148,7 +166,7 @@ async def websocket_camera(websocket: WebSocket, camera_id: int):
                     "type": "frame",
                     "camera_id": camera_id,
                     "frame": frame_b64,
-                    "timestamp": datetime.utcnow().isoformat(),
+                    "timestamp": datetime.now().isoformat(),
                 })
                 frame_count += 1
             else:
@@ -160,8 +178,10 @@ async def websocket_camera(websocket: WebSocket, camera_id: int):
                     "message": "Waiting for camera...",
                 })
             
-            # Control frame rate
-            await asyncio.sleep(1 / 15)  # 15 FPS for WebSocket
+            # Control frame rate dynamically
+            elapsed = (datetime.now() - loop_start).total_seconds()
+            sleep_time = max(0.01, (1.0 / 15.0) - elapsed)
+            await asyncio.sleep(sleep_time)
             
     except WebSocketDisconnect:
         manager.disconnect(websocket, "camera")
@@ -199,96 +219,168 @@ async def websocket_live_detection(websocket: WebSocket, camera_id: int):
     
     frame_skip = settings.FRAME_PROCESSING_SKIP
     frame_counter = 0
+    last_detections_data = []
+    is_processing = False
+    
+    # Temporal buffer for identity confirmation: {user_id: count}
+    identity_buffer: Dict[int, int] = {}
+    
+    # Keep track of unknown faces logged in this session
+    logged_unknowns: Set[int] = set()
+    
+    last_window_info = {"window_id": 1, "next_processing": datetime.now().isoformat(), "countdown_seconds": 0}
+    rec_threshold = settings.FACE_RECOGNITION_THRESHOLD
+    
+    def fetch_settings_sync():
+        db_session = SessionLocal()
+        try:
+            from app.services.attendance_service import get_current_window_info
+            from app.services.settings_service import get_setting
+            w_info = get_current_window_info(db_session)
+            threshold = float(get_setting(db_session, "recognition_confidence_threshold", settings.FACE_RECOGNITION_THRESHOLD))
+            return w_info, threshold
+        except Exception as e:
+            logger.error(f"Error fetching settings: {e}")
+            return None, None
+        finally:
+            db_session.close()
     
     try:
         while True:
+            loop_start = datetime.now()
             frame = camera_manager.get_frame(camera_id)
+            camera_status = camera_manager.get_camera_status(camera_id)
             
-            if frame is not None:
-                frame_counter += 1
-                detections_data = []
-                attendance_events = []
-                
-                # Process every Nth frame for recognition (performance)
+            if frame is not None and camera_status.get("connected"):
+                frame_counter += 1                # Process Nth frame for recognition (performance) WITHOUT blocking
                 if frame_counter % frame_skip == 0:
-                    try:
-                        annotated_frame, detected_faces = face_service.process_frame(
-                            frame=frame,
-                            recognize=True,
-                            liveness=True,
-                            enhance=True,
-                        )
-                        
-                        for face in detected_faces:
-                            face_data = {
-                                "bbox": face.bbox,
-                                "confidence": round(face.confidence, 3),
-                                "identity": face.identity or "Unknown",
-                                "user_id": face.user_id,
-                                "employee_id": face.employee_id,
-                                "recognition_confidence": round(face.recognition_confidence, 3),
-                                "liveness_score": round(face.liveness_score, 3),
-                                "is_real": face.is_real,
-                                "face_id": face.face_id,
-                            }
-                            detections_data.append(face_data)
+                    if frame_counter % (frame_skip * 5) == 0:
+                        w_info, t_hold = await asyncio.to_thread(fetch_settings_sync)
+                        if w_info is not None:
+                            last_window_info = w_info
+                            rec_threshold = t_hold
                             
-                            # Mark attendance for recognized real faces
-                            if (face.user_id and face.is_real and 
-                                face.recognition_confidence >= settings.FACE_RECOGNITION_THRESHOLD):
+                    if not is_processing:
+                        is_processing = True
+                        
+                        async def background_process(f, cid, cname):
+                            nonlocal last_detections_data, is_processing, identity_buffer, logged_unknowns
+                            try:
+                                a_f, detected_faces = await asyncio.to_thread(
+                                    face_service.process_frame,
+                                    frame=f,
+                                    recognize=True,
+                                    liveness=True,
+                                    enhance=False,
+                                )
                                 
-                                db = SessionLocal()
-                                try:
-                                    record = mark_attendance(
-                                        db=db,
-                                        user_id=face.user_id,
-                                        camera_id=camera_id,
-                                        confidence=face.recognition_confidence,
-                                        liveness_score=face.liveness_score,
-                                    )
+                                # Decay old identities slightly
+                                for uid in list(identity_buffer.keys()):
+                                    identity_buffer[uid] = max(0, identity_buffer[uid] - 1)
+                                    if identity_buffer[uid] == 0:
+                                        del identity_buffer[uid]
+                                        
+                                new_detections = []
+                                for face in detected_faces:
+                                    face_data = {
+                                        "bbox": face.bbox,
+                                        "identity": face.identity or "Unknown",
+                                        "confidence": round(face.recognition_confidence, 3),
+                                        "is_real": face.is_real,
+                                        "liveness_score": round(face.liveness_score, 3),
+                                        "user_id": face.user_id,
+                                        "employee_id": face.employee_id,
+                                        "recognition_confidence": round(face.recognition_confidence, 3),
+                                        "face_id": face.face_id,
+                                    }
+                                    new_detections.append(face_data)
                                     
-                                    if record:
-                                        attendance_events.append({
-                                            "user_id": face.user_id,
-                                            "user_name": face.identity,
-                                            "employee_id": face.employee_id,
-                                            "confidence": round(face.recognition_confidence, 3),
-                                            "liveness_score": round(face.liveness_score, 3),
-                                            "status": record.status,
-                                            "timestamp": record.timestamp.isoformat(),
-                                        })
-                                    
-                                except Exception as e:
-                                    logger.debug(f"Attendance marking error: {e}")
-                                finally:
-                                    db.close()
-                            
-                            # Log unknown detections
-                            elif face.identity == "Unknown" and face.confidence > 0.7:
-                                db = SessionLocal()
-                                try:
-                                    mark_unknown_detection(
-                                        db=db,
-                                        camera_id=camera_id,
-                                        confidence=face.confidence,
-                                        liveness_score=face.liveness_score,
-                                        bounding_box=list(face.bbox),
-                                    )
-                                except Exception:
-                                    pass
-                                finally:
-                                    db.close()
-                        
-                        # Use annotated frame for streaming
-                        display_frame = annotated_frame
-                        
-                    except Exception as e:
-                        logger.error(f"Frame processing error: {e}")
-                        display_frame = frame
-                else:
-                    display_frame = frame
+                                    # Temporal Buffer Logic
+                                    if (face.user_id and face.is_real and 
+                                        face.recognition_confidence >= rec_threshold):
+                                        
+                                        identity_buffer[face.user_id] = identity_buffer.get(face.user_id, 0) + 2
+                                        
+                                        if identity_buffer[face.user_id] >= 5:
+                                            try:
+                                                record, is_new = await asyncio.to_thread(
+                                                    thread_safe_mark_attendance,
+                                                    user_id=face.user_id,
+                                                    camera_id=cid,
+                                                    confidence=face.recognition_confidence,
+                                                    liveness_score=face.liveness_score,
+                                                )
+                                                
+                                                if record:
+                                                    event_msg = {
+                                                        "type": "attendance_marked",
+                                                        "camera_id": cid,
+                                                        "camera_name": cname,
+                                                        "user_id": face.user_id,
+                                                        "user_name": face.identity,
+                                                        "employee_id": face.employee_id,
+                                                        "confidence": round(face.recognition_confidence, 3),
+                                                        "liveness_score": round(face.liveness_score, 3),
+                                                        "status": record.status,
+                                                        "timestamp": record.timestamp.isoformat(),
+                                                        "in_time": record.in_time.strftime("%H:%M:%S") if record.in_time else None,
+                                                        "out_time": record.out_time.strftime("%H:%M:%S") if record.out_time else None,
+                                                        "window_id": record.attendance_window_id,
+                                                    }
+                                                    if is_new:
+                                                        await manager.send_personal(websocket, event_msg)
+                                                        await manager.broadcast("attendance", event_msg)
+                                            except Exception as e:
+                                                logger.debug(f"Attendance marking error: {e}")
+                                            
+                                            identity_buffer[face.user_id] = 5
+                                            
+                                    # Log unknown detections (save full frame instead of cropped zoom)
+                                    elif face.identity == "Unknown" and face.confidence > 0.7:
+                                        if face.face_id not in logged_unknowns:
+                                            try:
+                                                import uuid
+                                                import os
+                                                
+                                                filename = f"unknown_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}.jpg"
+                                                filepath = os.path.join(settings.SNAPSHOTS_PATH, filename)
+                                                # Save full frame instead of face.aligned_face
+                                                cv2.imwrite(filepath, a_f)
+                                                snapshot_url = f"/snapshots/{filename}"
+                                                    
+                                                await asyncio.to_thread(
+                                                    thread_safe_mark_unknown,
+                                                    camera_id=cid,
+                                                    confidence=face.confidence,
+                                                    liveness_score=face.liveness_score,
+                                                    snapshot_path=snapshot_url,
+                                                    bounding_box=[int(x) for x in face.bbox],
+                                                )
+                                                logged_unknowns.add(face.face_id)
+                                            except Exception as e:
+                                                logger.error(f"Failed to save unknown face: {e}")
+                                
+                                last_detections_data = new_detections
+                                
+                            except Exception as e:
+                                logger.error(f"Frame processing error: {e}")
+                            finally:
+                                is_processing = False
+                                
+                        asyncio.create_task(background_process(frame.copy(), camera_id, camera_name))
                 
-                # Encode and send frame
+                # Draw the latest known detections on the current frame
+                display_frame = frame.copy()
+                detections_data = last_detections_data
+                
+                for face_data in detections_data:
+                    x1, y1, x2, y2 = [int(v) for v in face_data["bbox"]]
+                    if face_data["identity"] != "Unknown":
+                        color = (0, 255, 0) if face_data["is_real"] else (0, 165, 255)
+                    else:
+                        color = (0, 255, 255) if face_data["is_real"] else (0, 0, 255)
+                    cv2.rectangle(display_frame, (x1, y1), (x2, y2), color, 2)
+                
                 encode_params = [cv2.IMWRITE_JPEG_QUALITY, 65]
                 _, buffer = cv2.imencode('.jpg', display_frame, encode_params)
                 frame_b64 = base64.b64encode(buffer).decode('utf-8')
@@ -299,29 +391,33 @@ async def websocket_live_detection(websocket: WebSocket, camera_id: int):
                     "camera_name": camera_name,
                     "frame": frame_b64,
                     "detections": detections_data,
-                    "timestamp": datetime.utcnow().isoformat(),
-                    "fps": camera_manager.get_camera_status(camera_id).get("fps", 0),
+                    "timestamp": datetime.now().isoformat(),
+                    "fps": camera_status.get("fps", 0),
+                    "window_info": last_window_info,
+                    "camera_status": camera_status,
                 }
                 
                 await manager.send_personal(websocket, message)
-                
-                # Send attendance events separately
-                for event in attendance_events:
-                    await manager.broadcast("attendance", {
-                        "type": "attendance_marked",
-                        "camera_id": camera_id,
-                        "camera_name": camera_name,
-                        **event,
-                    })
             else:
+                # Handle frozen/reconnecting states gracefully
+                state_msg = "Waiting for camera feed..."
+                if camera_status and camera_status.get("is_running") and not camera_status.get("connected"):
+                    state_msg = "Camera is RECONNECTING or frozen..."
+                
                 await manager.send_personal(websocket, {
-                    "type": "status",
+                    "type": "error",
                     "camera_id": camera_id,
                     "connected": False,
-                    "message": "Waiting for camera feed...",
+                    "message": state_msg,
+                    "camera_status": camera_status,
                 })
+                # Add a small delay so we don't spin if there's no frame
+                await asyncio.sleep(0.5)
             
-            await asyncio.sleep(1 / 10)  # 10 FPS processing rate
+            # Maintain steady FPS
+            elapsed = (datetime.now() - loop_start).total_seconds()
+            sleep_time = max(0.01, (1.0 / 15.0) - elapsed)
+            await asyncio.sleep(sleep_time)
             
     except WebSocketDisconnect:
         manager.disconnect(websocket, "camera")
@@ -345,7 +441,7 @@ async def websocket_system(websocket: WebSocket):
                     await manager.send_personal(websocket, {
                         "type": "system_status",
                         "active_cameras": camera_manager.active_count,
-                        "timestamp": datetime.utcnow().isoformat(),
+                        "timestamp": datetime.now().isoformat(),
                     })
                     
             except json.JSONDecodeError:
@@ -361,7 +457,7 @@ async def broadcast_attendance_event(event: dict):
     await manager.broadcast("attendance", {
         "type": "attendance_marked",
         **event,
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now().isoformat(),
     })
 
 async def broadcast_unknown_detection(camera_id: int, camera_name: str):
@@ -370,5 +466,5 @@ async def broadcast_unknown_detection(camera_id: int, camera_name: str):
         "type": "unknown_detected",
         "camera_id": camera_id,
         "camera_name": camera_name,
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now().isoformat(),
     })
