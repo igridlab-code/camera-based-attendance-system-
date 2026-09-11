@@ -12,6 +12,16 @@ const SAMPLE_TYPES = [
   { key: "right", label: "Right Profile Scan", instruction: "Turn your head 45 degrees to the right" },
   { key: "expression", label: "Biometric Expression", instruction: "Provide a natural expression/smile" },
 ];
+const DEPARTMENTS = [
+  "CSE",
+  "IT",
+  "AI&DS",
+  "ECE",
+  "EEE",
+  "AGRI",
+  "MECH",
+  "BME",
+];
 
 export default function RegisterUser() {
   const navigate = useNavigate();
@@ -27,6 +37,7 @@ export default function RegisterUser() {
   const [fullName, setFullName] = useState("");
   const [employeeId, setEmployeeId] = useState("");
   const [department, setDepartment] = useState("");
+
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
   const [role, setRole] = useState("employee");
@@ -86,7 +97,7 @@ export default function RegisterUser() {
           } else if (data.type === "status" && !data.connected) {
             // Optional handling
           }
-        } catch (e) {}
+        } catch (e) { }
       };
 
       ws.onerror = () => {
@@ -174,7 +185,16 @@ export default function RegisterUser() {
   // ── Submit ──────────────────────────────────────────────────────────
   const submitRegistration = async () => {
     setSaving(true);
+    let userId: number | null = null;
+
     try {
+      const hasImages = SAMPLE_TYPES.some((s) => capturedImages[s.key]);
+      if (!hasImages) {
+        addNotification({ type: "error", message: "No face samples captured. Please capture face samples before submitting." });
+        setSaving(false);
+        return;
+      }
+
       // 1. Create user
       const userRes = await userApi.create({
         full_name: fullName,
@@ -185,20 +205,47 @@ export default function RegisterUser() {
         role,
       });
 
-      const userId = userRes.data.id;
+      userId = userRes.data.id;
+      let successCount = 0;
 
       // 2. Upload face samples
       for (const sample of SAMPLE_TYPES) {
         const imageData = capturedImages[sample.key];
-        if (imageData) {
-          await userApi.captureFace(userId, imageData, sample.key);
+        if (imageData && userId) {
+          try {
+            const capRes = await userApi.captureFace(userId, imageData, sample.key);
+            if (capRes.data && capRes.data.success !== false) {
+              successCount++;
+            }
+          } catch (capErr) {
+            console.error("Sample capture error:", capErr);
+          }
         }
       }
 
+      // 3. Rollback if zero samples were saved
+      if (successCount === 0) {
+        if (userId) {
+          try { await userApi.delete(userId); } catch (_) { }
+        }
+        addNotification({
+          type: "error",
+          message: "Failed to extract face samples from photos. Please recapture photos with clear face view.",
+        });
+        setSaving(false);
+        return;
+      }
+
       stopCamera();
-      addNotification({ type: "success", message: `Subject ${fullName} enrolled successfully in the index.` });
+      addNotification({
+        type: "success",
+        message: `Subject ${fullName} enrolled successfully with ${successCount} facial samples.`,
+      });
       navigate("/users");
     } catch (e: any) {
+      if (userId) {
+        try { await userApi.delete(userId); } catch (_) { }
+      }
       addNotification({ type: "error", message: e.response?.data?.detail || "Failed to register user" });
     } finally {
       setSaving(false);
@@ -232,13 +279,12 @@ export default function RegisterUser() {
       <div className="flex items-center gap-4 bg-slate-950/40 border border-white/5 p-4 rounded-xl backdrop-blur-md">
         {(["details", "capture", "review"] as Step[]).map((s, i) => (
           <div key={s} className="flex items-center gap-2">
-            <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-mono transition-all duration-300 border ${
-              step === s
-                ? "bg-cyan-500/10 border-cyan-500 text-cyan-400 font-bold shadow-[0_0_10px_rgba(6,182,212,0.25)]"
-                : step === "review" || (step === "capture" && s === "details")
+            <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-mono transition-all duration-300 border ${step === s
+              ? "bg-cyan-500/10 border-cyan-500 text-cyan-400 font-bold shadow-[0_0_10px_rgba(6,182,212,0.25)]"
+              : step === "review" || (step === "capture" && s === "details")
                 ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400"
                 : "bg-white/[0.01] border-white/5 text-white/30"
-            }`}>
+              }`}>
               {i + 1}
             </div>
             <span className={`text-xs font-mono uppercase tracking-wider ${step === s ? "text-white font-bold" : "text-white/30"}`}>{s}</span>
@@ -252,27 +298,63 @@ export default function RegisterUser() {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
             <div>
               <label className="block text-xs font-mono uppercase text-white/50 mb-1.5 tracking-wider">Full Legal Name *</label>
-              <input value={fullName} onChange={(e) => setFullName(e.target.value)} className="w-full bg-white/[0.02] border border-white/10 rounded-lg px-4 py-2.5 text-white text-sm focus:outline-none focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/10 transition-all font-mono" placeholder="John Doe" />
+              <input
+                value={fullName}
+                onChange={(e) => setFullName(e.target.value)}
+                className="w-full bg-slate-950/80 border border-white/10 rounded-lg px-4 py-2.5 text-white text-sm focus:outline-none focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/10 transition-all font-mono"
+                placeholder="Enter your name"
+              />
             </div>
             <div>
               <label className="block text-xs font-mono uppercase text-white/50 mb-1.5 tracking-wider">Subject Index ID (Emp ID) *</label>
-              <input value={employeeId} onChange={(e) => setEmployeeId(e.target.value)} className="w-full bg-white/[0.02] border border-white/10 rounded-lg px-4 py-2.5 text-white text-sm focus:outline-none focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/10 transition-all font-mono" placeholder="EMP001" />
+              <input
+                value={employeeId}
+                onChange={(e) => setEmployeeId(e.target.value)}
+                className="w-full bg-slate-950/80 border border-white/10 rounded-lg px-4 py-2.5 text-white text-sm focus:outline-none focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/10 transition-all font-mono"
+                placeholder="Enter Emp ID"
+              />
             </div>
             <div>
-              <label className="block text-xs font-mono uppercase text-white/50 mb-1.5 tracking-wider">Assigned Department</label>
-              <input value={department} onChange={(e) => setDepartment(e.target.value)} className="w-full bg-white/[0.02] border border-white/10 rounded-lg px-4 py-2.5 text-white text-sm focus:outline-none focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/10 transition-all font-mono" placeholder="Operations / Engineering" />
+              <label className="block text-xs font-mono uppercase text-white/50 mb-1.5 tracking-wider">Department</label>
+              <select
+                value={department}
+                onChange={(e) => setDepartment(e.target.value)}
+                className="w-full bg-slate-950/80 border border-white/10 rounded-lg px-4 py-2.5 text-white text-sm focus:outline-none focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/10 transition-all font-mono"
+              >
+                <option value="" className="bg-slate-900 text-white/50">Select Department</option>
+                {DEPARTMENTS.map((dept) => (
+                  <option key={dept} value={dept} className="bg-slate-900 text-white">
+                    {dept}
+                  </option>
+                ))}
+              </select>
             </div>
             <div>
               <label className="block text-xs font-mono uppercase text-white/50 mb-1.5 tracking-wider">Secure Comms (Email)</label>
-              <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" className="w-full bg-white/[0.02] border border-white/10 rounded-lg px-4 py-2.5 text-white text-sm focus:outline-none focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/10 transition-all font-mono" placeholder="john@domain.com" />
+              <input
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                type="email"
+                className="w-full bg-slate-950/80 border border-white/10 rounded-lg px-4 py-2.5 text-white text-sm focus:outline-none focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/10 transition-all font-mono"
+                placeholder="user@domain.com"
+              />
             </div>
             <div>
               <label className="block text-xs font-mono uppercase text-white/50 mb-1.5 tracking-wider">Direct Tel (Phone)</label>
-              <input value={phone} onChange={(e) => setPhone(e.target.value)} className="w-full bg-white/[0.02] border border-white/10 rounded-lg px-4 py-2.5 text-white text-sm focus:outline-none focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/10 transition-all font-mono" placeholder="+1 234 567 890" />
+              <input
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+                className="w-full bg-slate-950/80 border border-white/10 rounded-lg px-4 py-2.5 text-white text-sm focus:outline-none focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/10 transition-all font-mono"
+                placeholder="+1..."
+              />
             </div>
             <div>
               <label className="block text-xs font-mono uppercase text-white/50 mb-1.5 tracking-wider">Security Class (Role)</label>
-              <select value={role} onChange={(e) => setRole(e.target.value)} className="w-full bg-white/[0.02] border border-white/10 rounded-lg px-4 py-2.5 text-white text-sm focus:outline-none focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/10 transition-all font-mono">
+              <select
+                value={role}
+                onChange={(e) => setRole(e.target.value)}
+                className="w-full bg-slate-950/80 border border-white/10 rounded-lg px-4 py-2.5 text-white text-sm focus:outline-none focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/10 transition-all font-mono"
+              >
                 <option value="employee">Standard Employee</option>
                 <option value="student">Academic Student</option>
                 <option value="visitor">Visitor Credentials</option>
@@ -408,13 +490,12 @@ export default function RegisterUser() {
                 <button
                   key={s.key}
                   onClick={() => { setCurrentSampleIndex(i); setCaptureStatus("idle"); }}
-                  className={`w-20 h-20 rounded-xl border overflow-hidden transition-all duration-300 relative group cursor-pointer ${
-                    i === currentSampleIndex
-                      ? "border-cyan-500 shadow-[0_0_10px_rgba(6,182,212,0.2)] bg-cyan-500/5"
-                      : capturedImages[s.key]
+                  className={`w-20 h-20 rounded-xl border overflow-hidden transition-all duration-300 relative group cursor-pointer ${i === currentSampleIndex
+                    ? "border-cyan-500 shadow-[0_0_10px_rgba(6,182,212,0.2)] bg-cyan-500/5"
+                    : capturedImages[s.key]
                       ? "border-emerald-500/40"
                       : "border-white/5 bg-slate-950/40"
-                  }`}
+                    }`}
                 >
                   {capturedImages[s.key] ? (
                     <>

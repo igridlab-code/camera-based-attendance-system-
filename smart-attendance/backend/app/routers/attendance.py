@@ -13,7 +13,8 @@ from app.database import get_db
 from app.auth import get_current_admin, get_current_admin_optional, require_admin
 from app.services.attendance_service import (
     get_attendance_records, get_today_stats, get_attendance_trends,
-    get_hourly_distribution, get_department_stats, export_attendance
+    get_hourly_distribution, get_department_stats, export_attendance,
+    get_date_wise_summary
 )
 from app import schemas
 
@@ -25,6 +26,17 @@ router = APIRouter(prefix="/attendance", tags=["Attendance"])
 def today_stats(db: Session = Depends(get_db), admin = Depends(get_current_admin_optional)):
     """Get today's attendance statistics."""
     return get_today_stats(db)
+
+
+@router.get("/summary")
+def attendance_summary(
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    db: Session = Depends(get_db),
+    admin = Depends(get_current_admin_optional)
+):
+    """Get date-wise attendance summary breakdown (present, late, absent)."""
+    return get_date_wise_summary(db, date_from, date_to)
 
 
 @router.get("/records")
@@ -56,10 +68,10 @@ def list_attendance(
     
     results = []
     seen_user_ids = set()
-    today = date.today()
+    target_date = date_from or date.today()
     
     for r in records:
-        if r.user_id and r.date == today:
+        if r.user_id and r.date == target_date:
             seen_user_ids.add(r.user_id)
         results.append(schemas.AttendanceRecordOut(
             id=r.id,
@@ -82,21 +94,26 @@ def list_attendance(
             attendance_window_id=r.attendance_window_id,
         ))
     
-    # Include ABSENT entries for registered active users who have not checked in today
-    if page == 1 and not status and not user_id and not date_from and not date_to:
+    # Include synthetic ABSENT entries for registered active users who have not checked in on target_date
+    if status in (None, "", "absent") and not camera_id:
         from datetime import datetime as dt
         from app.models import User
-        active_users = db.query(User).filter(User.is_active == True).all()
+        active_users_q = db.query(User).filter(User.is_active == True)
+        if user_id:
+            active_users_q = active_users_q.filter(User.id == user_id)
+        active_users = active_users_q.all()
         now_dt = dt.now()
+        
+        absent_entries = []
         for u in active_users:
             if u.id not in seen_user_ids:
-                results.append(schemas.AttendanceRecordOut(
+                absent_entries.append(schemas.AttendanceRecordOut(
                     id=900000 + u.id,
                     user_id=u.id,
                     user_name=u.full_name,
                     user_employee_id=u.employee_id,
                     timestamp=now_dt,
-                    date=today,
+                    date=target_date,
                     time_str=None,
                     camera_id=None,
                     camera_name=None,
@@ -110,9 +127,20 @@ def list_attendance(
                     out_time=None,
                     attendance_window_id=1,
                 ))
-                total += 1
+        
+        if status == "absent":
+            results = absent_entries
+            total = len(results)
+        else:
+            results.extend(absent_entries)
+            total = len(results)
+
+    start_idx = (page - 1) * page_size
+    end_idx = start_idx + page_size
+    page_items = results[start_idx:end_idx] if len(results) > page_size else results
     
-    return {"items": results, "total": total, "page": page, "page_size": page_size}
+    return {"items": page_items, "total": total, "page": page, "page_size": page_size}
+
 
 
 @router.get("/trends")

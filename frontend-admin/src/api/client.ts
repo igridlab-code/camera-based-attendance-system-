@@ -73,6 +73,7 @@ export const cameraApi = {
 
 export const attendanceApi = {
   todayStats: () => client.get("/attendance/today/stats"),
+  summary: (params?: any) => client.get("/attendance/summary", { params }),
   records: (params?: any) => client.get("/attendance/records", { params }),
   trends: (days?: number) => client.get("/attendance/trends", { params: { days } }),
   hourly: (date?: string) => client.get("/attendance/hourly-distribution", { params: date ? { date } : {} }),

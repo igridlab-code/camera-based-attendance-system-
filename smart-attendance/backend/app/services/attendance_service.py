@@ -542,6 +542,95 @@ def export_attendance(db: Session, filters: schemas.AttendanceFilter, format_typ
     return ""
 
 
+def get_date_wise_summary(
+    db: Session,
+    date_from: Optional[datetime.date] = None,
+    date_to: Optional[datetime.date] = None
+) -> Dict[str, Any]:
+    """
+    Get date-wise attendance summary breakdown (Present, Late, Absent, Total Users)
+    for a given date range or all recorded dates.
+    """
+    total_users = db.query(func.count(models.User.id)).filter(
+        models.User.is_active == True
+    ).scalar() or 0
+
+    query = db.query(models.AttendanceRecord.date).distinct()
+    if date_from:
+        query = query.filter(models.AttendanceRecord.date >= date_from)
+    if date_to:
+        query = query.filter(models.AttendanceRecord.date <= date_to)
+
+    dates = [row[0] for row in query.order_by(desc(models.AttendanceRecord.date)).all()]
+
+    today = datetime.date.today()
+    if today not in dates:
+        if (not date_from or date_from <= today) and (not date_to or date_to >= today):
+            dates.insert(0, today)
+
+    daily_summary = []
+    overall_present = 0
+    overall_late = 0
+    overall_absent = 0
+
+    for d in dates:
+        p_count = db.query(func.count(models.AttendanceRecord.id)).filter(
+            and_(
+                models.AttendanceRecord.date == d,
+                models.AttendanceRecord.status == "present"
+            )
+        ).scalar() or 0
+
+        l_count = db.query(func.count(models.AttendanceRecord.id)).filter(
+            and_(
+                models.AttendanceRecord.date == d,
+                models.AttendanceRecord.status == "late"
+            )
+        ).scalar() or 0
+
+        db_absent = db.query(func.count(models.AttendanceRecord.id)).filter(
+            and_(
+                models.AttendanceRecord.date == d,
+                models.AttendanceRecord.status == "absent"
+            )
+        ).scalar() or 0
+
+        distinct_marked = db.query(func.count(func.distinct(models.AttendanceRecord.user_id))).filter(
+            and_(
+                models.AttendanceRecord.date == d,
+                models.AttendanceRecord.status.in_(["present", "late"])
+            )
+        ).scalar() or 0
+
+        a_count = max(db_absent, max(0, total_users - distinct_marked))
+        rate = round(((p_count + l_count) / total_users * 100), 1) if total_users > 0 else 0.0
+
+        daily_summary.append({
+            "date": d.strftime("%Y-%m-%d"),
+            "present": p_count,
+            "late": l_count,
+            "absent": a_count,
+            "total_users": total_users,
+            "attendance_rate": rate
+        })
+
+        overall_present += p_count
+        overall_late += l_count
+        overall_absent += a_count
+
+    return {
+        "dates": daily_summary,
+        "overall": {
+            "total_users": total_users,
+            "present": overall_present,
+            "late": overall_late,
+            "absent": overall_absent,
+            "total_days": len(daily_summary)
+        }
+    }
+
+
 def cleanup_old_cooldowns():
     """No longer used. Replaced by Window logic."""
     pass
+

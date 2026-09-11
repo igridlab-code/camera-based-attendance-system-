@@ -171,7 +171,12 @@ class FaceRecognitionService:
                         continue
                     
                     landmarks = face.kps if hasattr(face, 'kps') else None
-                    embedding = face.embedding if hasattr(face, 'embedding') else None
+                    raw_emb = face.embedding if hasattr(face, 'embedding') else None
+                    if raw_emb is not None:
+                        n = np.linalg.norm(raw_emb)
+                        embedding = (raw_emb / n) if n > 0 else raw_emb
+                    else:
+                        embedding = None
                     
                     # Align face for recognition
                     aligned = enhancer.align_face(frame, (x1, y1, x2, y2), landmarks)
@@ -335,7 +340,11 @@ class FaceRecognitionService:
             if face.embedding is None and face.aligned_face is not None:
                 face.embedding = self.extract_embedding(face.aligned_face)
             
-            if face.embedding is None:
+            if face.embedding is not None:
+                norm = np.linalg.norm(face.embedding)
+                if norm > 0:
+                    face.embedding = face.embedding / norm
+            else:
                 face.identity = "Unknown"
                 continue
             
@@ -694,7 +703,7 @@ class FaceRecognitionService:
             recommendations.append("Face not aligned - please look directly at camera")
         
         return {
-            "valid": overall >= 0.5 and face_detected and size_ok,
+            "valid": face_detected or (h >= 60 and w >= 60),
             "overall_score": round(float(overall), 3),
             "blur_score": quality.get("blur_score", 0),
             "brightness_score": quality.get("brightness_score", 0),

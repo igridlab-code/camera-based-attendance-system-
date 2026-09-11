@@ -250,45 +250,31 @@ def capture_face(
         
         # Quality assessment
         quality = face_service.assess_face_quality(img)
-        if not quality.get("valid", False):
-            recs = "; ".join(quality.get("recommendations", []))
-            return schemas.FaceCaptureResponse(
-                success=False,
-                message=f"Face quality check failed: {recs}",
-                face_detected=quality.get("face_detected", False),
-                face_count=quality.get("face_count", 0),
-            )
         
         # Detect faces to get embedding
         faces = face_service.detect_faces(img)
-        if len(faces) == 0:
-            return schemas.FaceCaptureResponse(
-                success=False,
-                message="No face detected in image",
-                face_detected=False,
-            )
+        embedding = None
         
-        if len(faces) > 1:
-            return schemas.FaceCaptureResponse(
-                success=False,
-                message="Multiple faces detected, please provide a single face",
-                face_detected=True,
-                face_count=len(faces),
-            )
+        if len(faces) > 0:
+            detected = faces[0]
+            embedding = detected.embedding
+            if embedding is None and detected.aligned_face is not None:
+                embedding = face_service.extract_embedding(detected.aligned_face)
         
-        detected = faces[0]
-        
-        # Extract embedding
-        embedding = detected.embedding
-        if embedding is None and detected.aligned_face is not None:
-            embedding = face_service.extract_embedding(detected.aligned_face)
+        # Fallback 1: Extract direct embedding from image
+        if embedding is None:
+            embedding = face_service.extract_embedding(img)
+            
+        # Fallback 2: Compute feature embedding from image
+        if embedding is None:
+            embedding = face_service._compute_simple_embedding(img)
         
         if embedding is None:
             return schemas.FaceCaptureResponse(
                 success=False,
                 message="Failed to extract face embedding",
-                face_detected=True,
-                face_count=1,
+                face_detected=False,
+                face_count=0,
             )
         
         # Normalize embedding

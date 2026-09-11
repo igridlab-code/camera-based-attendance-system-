@@ -11,7 +11,7 @@ from typing import Optional
 
 
 from app.database import get_db
-from app.auth import get_current_admin, require_admin
+from app.auth import get_current_admin, get_current_admin_optional, require_admin
 from app.config import settings
 from app.services.camera_service import camera_manager
 from app import models, schemas
@@ -40,7 +40,7 @@ def _db_camera_to_schema(camera: models.Camera) -> schemas.CameraOut:
 # Otherwise FastAPI will try to parse "status" as an integer and return 422.
 
 @router.get("/status/all")
-def get_all_camera_status(db: Session = Depends(get_db), admin = Depends(get_current_admin)):
+def get_all_camera_status(db: Session = Depends(get_db), admin = Depends(get_current_admin_optional)):
     """Get status of all camera streams."""
     return camera_manager.get_all_status()
 
@@ -89,7 +89,7 @@ def create_camera(camera: schemas.CameraCreate, db: Session = Depends(get_db)):
 def list_cameras(
     is_active: Optional[bool] = None,
     db: Session = Depends(get_db),
-    admin = Depends(get_current_admin)
+    admin = Depends(get_current_admin_optional)
 ):
     """List all cameras."""
     query = db.query(models.Camera)
@@ -111,7 +111,7 @@ def list_cameras(
 # ─── Per-camera routes ───────────────────────────────────────────────
 
 @router.get("/{camera_id}", response_model=schemas.CameraOut)
-def get_camera(camera_id: int, db: Session = Depends(get_db), admin = Depends(get_current_admin)):
+def get_camera(camera_id: int, db: Session = Depends(get_db), admin = Depends(get_current_admin_optional)):
     """Get camera details."""
     camera = db.query(models.Camera).filter(models.Camera.id == camera_id).first()
     if not camera:
@@ -239,6 +239,6 @@ def get_camera_frame(camera_id: int, db: Session = Depends(get_db), admin = Depe
 
 
 @router.get("/{camera_id}/status")
-def get_camera_status(camera_id: int, db: Session = Depends(get_db), admin = Depends(get_current_admin)):
+def get_camera_status(camera_id: int, db: Session = Depends(get_db), admin = Depends(get_current_admin_optional)):
     """Get camera streaming status."""
     return camera_manager.get_camera_status(camera_id)
